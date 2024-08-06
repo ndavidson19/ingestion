@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rest-ingestion-service
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: rest-ingestion-service
+  template:
+    metadata:
+      labels:
+        app: rest-ingestion-service
+    spec:
+      containers:
+      - name: rest-ingestion-service
+        image: your-registry/rest-ingestion-service:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: KAFKA_BROKERS
+          value: "kafka-broker1:9092,kafka-broker2:9092"
+        - name: PORT
+          value: "8080"
+        - name: AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: api-secrets
+              key: auth-token

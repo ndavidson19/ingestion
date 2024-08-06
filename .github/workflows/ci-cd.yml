@@ -1,0 +1,100 @@
+# File: .github/workflows/ci-cd.yml
+
+name: CI/CD
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip test]') && !contains(github.event.head_commit.message, '[skip all]')"
+    steps:
+    - uses: actions/checkout@v2
+    - name: Set up Go
+      uses: actions/setup-go@v2
+      with:
+        go-version: 1.20
+    - name: Test
+      run: go test ./...
+  lint:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip lint]') && !contains(github.event.head_commit.message, '[skip all]')"
+    steps:
+    - uses: actions/checkout@v2
+    - name: Set up Go
+      uses: actions/setup-go@v2
+      with:
+        go-version: 1.20
+    - name: Lint
+      run: |
+        curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.41.1
+        golangci-lint run
+  build:
+    needs: [test, lint]
+    if: "!contains(github.event.head_commit.message, '[skip build]') && !contains(github.event.head_commit.message, '[skip all]')"
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - name: Build Docker image
+      run: docker build -t ${{ secrets.DOCKER_USERNAME }}/rest-ingestion-service:${{ github.sha }} -f deployments/Dockerfile .
+    - name: Login to DockerHub
+      uses: docker/login-action@v1
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+    - name: Push Docker image
+      run: docker push ${{ secrets.DOCKER_USERNAME }}/rest-ingestion-service:${{ github.sha }}
+  deploy:
+    needs: [build, security]
+    runs-on: ubuntu-latest
+    if: "github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[skip deploy]') && !contains(github.event.head_commit.message, '[skip all]')"
+    steps:
+    - uses: actions/checkout@v2
+    - name: Install kubectl
+      uses: azure/setup-kubectl@v1
+    - name: Configure kubectl
+      run: echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > kubeconfig.yaml
+    - name: Deploy canary to Kubernetes
+      run: |
+        export KUBECONFIG=./kubeconfig.yaml
+        kubectl apply -f deployments/kubernetes/canary-deployment.yaml
+        kubectl apply -f deployments/kubernetes/ingress.yaml
+    - name: Wait for canary deployment
+      run: |
+        export KUBECONFIG=./kubeconfig.yaml
+        kubectl rollout status deployment/rest-ingestion-service-canary
+    - name: Promote canary to production
+      run: |
+        export KUBECONFIG=./kubeconfig.yaml
+        kubectl set image deployment/rest-ingestion-service rest-ingestion-service=${{ secrets.DOCKER_USERNAME }}/rest-ingestion-service:${{ github.sha }}
+        kubectl rollout status deployment/rest-ingestion-service
+    - name: Remove canary
+      run: |
+        export KUBECONFIG=./kubeconfig.yaml
+        kubectl delete -f deployments/kubernetes/canary-deployment.yaml
+        kubectl delete -f deployments/kubernetes/ingress.yaml
+
+  security:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip security]') && !contains(github.event.head_commit.message, '[skip all]')"
+    steps:
+    - uses: actions/checkout@v2
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v1
+      with:
+        languages: go
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v1
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: '${{ secrets.DOCKER_USERNAME }}/rest-ingestion-service:${{ github.sha }}'
+        format: 'table'
+        exit-code: '1'
+        ignore-unfixed: true
+        vuln-type: 'os,library'
+        severity: 'CRITICAL,HIGH'

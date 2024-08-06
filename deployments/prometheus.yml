@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'rest-ingestion-service'
+    static_configs:
+      - targets: ['rest-ingestion-service:8080']
+
+rule_files:
+  - 'alert.rules'
+
+alerting:
+  alertmanagers:
+  - static_configs:
+    - targets:
+      - 'alertmanager:9093'
